@@ -100,7 +100,7 @@ function SharedHighlights({
   const isArrow = active.upArrow || active.downArrow;
   const memoryStart = active.memory[0]?.index;
   const memoryWidth =
-    memoryStart === undefined ? 0 : x(activeIndex) - x(memoryStart) + cellWidth;
+    memoryStart === undefined ? 0 : x(activeIndex) - x(memoryStart);
 
   return (
     <g className="shared-highlights">
@@ -268,6 +268,7 @@ interface LineChartProps extends SharedChartProps {
   height?: number;
   series: LineSeries[];
   showBreaks?: boolean;
+  showHistogram?: boolean;
 }
 
 export function LineChart({
@@ -277,6 +278,7 @@ export function LineChart({
   onHover,
   series,
   showBreaks = false,
+  showHistogram = false,
   height = 220,
 }: LineChartProps) {
   const plotWidth = WIDTH - LEFT - RIGHT;
@@ -288,6 +290,19 @@ export function LineChart({
       .filter((value): value is number => value !== null),
   );
   const scale = createScale(values.length ? [...values, 0] : [0, 1], height);
+  const zeroY = scale.y(0);
+  const histogramWidth = Math.max(2, Math.min(8, cellWidth * 0.72));
+  const active = rows[activeIndex];
+  const beatenMemory =
+    active?.upArrow && active.memory.length
+      ? active.memory.reduce((highest, item) =>
+          item.value > highest.value ? item : highest,
+        )
+      : active?.downArrow && active.memory.length
+        ? active.memory.reduce((lowest, item) =>
+            item.value < lowest.value ? item : lowest,
+          )
+        : null;
 
   return (
     <svg
@@ -306,6 +321,39 @@ export function LineChart({
           y2={scale.y(0)}
         />
       )}
+      {showHistogram && (
+        <g className="diff-histogram">
+          {rows.map((row, index) => {
+            if (row.diff === null) return null;
+            const previousDiff = rows[index - 1]?.diff;
+            const expanding =
+              previousDiff === null ||
+              previousDiff === undefined ||
+              Math.abs(row.diff) >= Math.abs(previousDiff);
+            const direction = row.diff >= 0 ? "positive" : "negative";
+            const movement = expanding ? "growing" : "shrinking";
+            const barY = scale.y(row.diff);
+
+            return (
+              <rect
+                key={`histogram-${row.index}`}
+                className={`histogram-bar histogram-${direction}-${movement} ${
+                  row.index === activeIndex ? "histogram-active" : ""
+                }`}
+                x={x(index) - histogramWidth / 2}
+                y={Math.min(zeroY, barY)}
+                width={histogramWidth}
+                height={Math.max(1, Math.abs(zeroY - barY))}
+                rx="1"
+              >
+                <title>
+                  Diff {row.diff.toFixed(5)} · {direction} and {movement}
+                </title>
+              </rect>
+            );
+          })}
+        </g>
+      )}
       <SharedHighlights
         rows={rows}
         activeIndex={activeIndex}
@@ -320,6 +368,35 @@ export function LineChart({
           d={pathFor(rows, item.getValue, x, scale.y)}
         />
       ))}
+      {showHistogram && beatenMemory && active.diff !== null && (
+        <g className="beaten-record">
+          <line
+            x1={x(beatenMemory.index)}
+            y1={scale.y(beatenMemory.value)}
+            x2={x(active.index)}
+            y2={scale.y(active.diff)}
+          />
+          <circle
+            className="beaten-record-source"
+            cx={x(beatenMemory.index)}
+            cy={scale.y(beatenMemory.value)}
+            r="7"
+          />
+          <circle
+            className="beaten-record-current"
+            cx={x(active.index)}
+            cy={scale.y(active.diff)}
+            r="6"
+            style={{ color: accent }}
+          />
+          <text
+            x={x(beatenMemory.index) + 9}
+            y={scale.y(beatenMemory.value) - 9}
+          >
+            {active.upArrow ? "beaten UpperBand" : "beaten LowerBand"}
+          </text>
+        </g>
+      )}
       {showBreaks && (
         <g className="break-markers" style={{ color: accent }}>
           {rows.map((row, index) => {

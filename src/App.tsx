@@ -40,10 +40,93 @@ function compactTime(time: string) {
   }).format(date);
 }
 
+function signedNumber(value: number, digits = 5) {
+  return `${value >= 0 ? "+" : ""}${value.toFixed(digits)}`;
+}
+
 function classificationClass(classification: CalculatedCandle["classification"]) {
   if (classification === "Reinforcement") return "class-reinforcement";
   if (classification === "Defeat") return "class-defeat";
   return "class-fresh";
+}
+
+interface ArrowDecision {
+  heading: string;
+  summary: string;
+  detail: string;
+  kind: "arrow" | "no-arrow" | "warming";
+}
+
+function getArrowDecision(
+  row: CalculatedCandle,
+  previousRow: CalculatedCandle | undefined,
+): ArrowDecision {
+  if (row.diff === null) {
+    return {
+      heading: "Why no arrow?",
+      summary: "Diff is still warming up.",
+      detail: "The selected averages do not yet have enough valid values.",
+      kind: "warming",
+    };
+  }
+
+  if (row.upperBand === null || row.lowerBand === null) {
+    return {
+      heading: "Why no arrow?",
+      summary: `Only ${row.memory.length} previous Diff values are available.`,
+      detail: "A complete memory window is required before either threshold exists.",
+      kind: "warming",
+    };
+  }
+
+  const beatsUpper = row.diff >= row.upperBand;
+  const beatsLower = row.diff <= row.lowerBand;
+  const previousDiff = previousRow?.diff;
+  const previousUpper = previousRow?.upperBand;
+  const previousLower = previousRow?.lowerBand;
+
+  if (row.upArrow) {
+    return {
+      heading: "Why the Up arrow printed",
+      summary: `Diff ${formatNumber(row.diff)} ≥ UpperBand ${formatNumber(row.upperBand)}.`,
+      detail: `The crossover also passed: previous Diff ${formatNumber(previousDiff ?? null)} < previous UpperBand ${formatNumber(previousUpper ?? null)}.`,
+      kind: "arrow",
+    };
+  }
+
+  if (row.downArrow) {
+    return {
+      heading: "Why the Down arrow printed",
+      summary: `Diff ${formatNumber(row.diff)} ≤ LowerBand ${formatNumber(row.lowerBand)}.`,
+      detail: `The crossover also passed: previous Diff ${formatNumber(previousDiff ?? null)} > previous LowerBand ${formatNumber(previousLower ?? null)}.`,
+      kind: "arrow",
+    };
+  }
+
+  if (!beatsUpper && !beatsLower) {
+    return {
+      heading: "Why no arrow?",
+      summary: `Diff ${formatNumber(row.diff)} stayed between LowerBand ${formatNumber(row.lowerBand)} and UpperBand ${formatNumber(row.upperBand)}.`,
+      detail: `Upper test: ${formatNumber(row.diff)} ≥ ${formatNumber(row.upperBand)} is FALSE. Lower test: ${formatNumber(row.diff)} ≤ ${formatNumber(row.lowerBand)} is FALSE.`,
+      kind: "no-arrow",
+    };
+  }
+
+  if (beatsUpper) {
+    return {
+      heading: "Why no arrow?",
+      summary: `Diff ${formatNumber(row.diff)} beat UpperBand ${formatNumber(row.upperBand)}, but the crossover condition failed.`,
+      detail: `Required: previous Diff ${formatNumber(previousDiff ?? null)} < previous UpperBand ${formatNumber(previousUpper ?? null)}. This is FALSE.`,
+      kind: "no-arrow",
+    };
+  }
+
+  return {
+    heading: "Why no arrow?",
+    summary: `Diff ${formatNumber(row.diff)} beat LowerBand ${formatNumber(row.lowerBand)}, but the crossover condition failed.`,
+    detail: `Required: previous Diff ${formatNumber(previousDiff ?? null)} > previous LowerBand ${formatNumber(previousLower ?? null)}. This is FALSE.`,
+    kind: "no-arrow",
+  };
 }
 
 function Stat({
@@ -118,9 +201,11 @@ function PanelHeader({
 
 function MemoryScoreboard({
   row,
+  previousRow,
   settings,
 }: {
   row: CalculatedCandle;
+  previousRow: CalculatedCandle | undefined;
   settings: IndicatorSettings;
 }) {
   const memoryLength = settings.memoryLength;
@@ -132,6 +217,14 @@ function MemoryScoreboard({
     row.diff !== null && row.upperBand !== null && row.diff >= row.upperBand;
   const beatsLower =
     row.diff !== null && row.lowerBand !== null && row.diff <= row.lowerBand;
+  const decision = getArrowDecision(row, previousRow);
+  const closeMove = previousRow ? row.close - previousRow.close : null;
+  const diffMovement =
+    row.diff !== null && previousRow?.diff !== null && previousRow?.diff !== undefined
+      ? Math.abs(row.diff) >= Math.abs(previousRow.diff)
+        ? "expanded"
+        : "shrank"
+      : "is establishing its first comparison";
 
   return (
     <section className="scoreboard card">
@@ -163,6 +256,90 @@ function MemoryScoreboard({
         <Stat label="LowerBand" value={formatNumber(row.lowerBand)} tone={beatsLower ? "down" : undefined} />
       </div>
 
+      <div className="calculation-story">
+        <div className="story-heading">
+          <span className="eyebrow">Hovered candle</span>
+          <h3>Calculation story</h3>
+        </div>
+        <ol>
+          <li>
+            <span>1</span>
+            <div>
+              <strong>Price moved.</strong>
+              <p>
+                Close is {formatNumber(row.close, 4)}
+                {closeMove === null
+                  ? "; this is the first candle."
+                  : `, a ${signedNumber(closeMove, 4)} move from the previous close.`}
+              </p>
+            </div>
+          </li>
+          <li>
+            <span>2</span>
+            <div>
+              <strong>Fast and slow averages created Value.</strong>
+              <p>
+                {settings.averageType}({settings.fastLength}) {formatNumber(row.fastAverage)}
+                {" − "}
+                {settings.averageType}({settings.slowLength}) {formatNumber(row.slowAverage)}
+                {" = Value "}
+                {formatNumber(row.value)}.
+              </p>
+            </div>
+          </li>
+          <li>
+            <span>3</span>
+            <div>
+              <strong>Avg shows the recent normal Value.</strong>
+              <p>
+                {settings.averageType}({settings.macdLength}) of Value = Avg{" "}
+                {formatNumber(row.avg)}.
+              </p>
+            </div>
+          </li>
+          <li>
+            <span>4</span>
+            <div>
+              <strong>Diff measures Value versus normal.</strong>
+              <p>
+                Value {formatNumber(row.value)} − Avg {formatNumber(row.avg)} = Diff{" "}
+                {formatNumber(row.diff)}; its magnitude {diffMovement}.
+              </p>
+            </div>
+          </li>
+          <li>
+            <span>5</span>
+            <div>
+              <strong>Previous Diff values created memory.</strong>
+              <p>
+                The previous {settings.memoryLength} values set LowerBand{" "}
+                {formatNumber(row.lowerBand)} and UpperBand {formatNumber(row.upperBand)}.
+              </p>
+            </div>
+          </li>
+          <li>
+            <span>6</span>
+            <div>
+              <strong>An arrow needs a threshold break and crossover.</strong>
+              <p>{decision.summary}</p>
+            </div>
+          </li>
+        </ol>
+      </div>
+
+      <div className={`decision-box decision-${decision.kind}`}>
+        <div>
+          <span className="decision-icon">
+            {decision.kind === "arrow" ? "✓" : decision.kind === "warming" ? "…" : "×"}
+          </span>
+        </div>
+        <div>
+          <h3>{decision.heading}</h3>
+          <p>{decision.summary}</p>
+          <code>{decision.detail}</code>
+        </div>
+      </div>
+
       <div className="memory-header">
         <div>
           <h3>Previous {memoryLength} Diff values</h3>
@@ -184,15 +361,27 @@ function MemoryScoreboard({
         {row.memory.map((item) => {
           const isHigh = item.value === highValue;
           const isLow = item.value === lowValue;
+          const isBeaten =
+            (row.upArrow && isHigh) || (row.downArrow && isLow);
           return (
             <div
               key={item.index}
-              className={`memory-cell ${isHigh ? "memory-high" : ""} ${isLow ? "memory-low" : ""}`}
+              className={`memory-cell ${isHigh ? "memory-high" : ""} ${isLow ? "memory-low" : ""} ${isBeaten ? "memory-beaten" : ""}`}
               title={item.time}
             >
               <span>#{item.index + 1}</span>
               <strong>{formatNumber(item.value)}</strong>
-              <small>{isHigh ? "HIGH" : isLow ? "LOW" : "remembered"}</small>
+              <small>
+                {isBeaten
+                  ? row.upArrow
+                    ? "BEATEN UPPER RECORD"
+                    : "BEATEN LOWER RECORD"
+                  : isHigh
+                    ? "HIGH"
+                    : isLow
+                      ? "LOW"
+                      : "remembered"}
+              </small>
             </div>
           );
         })}
@@ -293,6 +482,10 @@ function ArrowTable({
         Defeat = an opposite arrow remains inside the last N candles. Reinforcement = a
         same-direction arrow remains. Fresh / after forgotten memory = neither is
         remembered.
+      </p>
+      <p className="classification-warning">
+        These labels are learning classifications based on recent arrow context. They are
+        not part of the original ThinkScript.
       </p>
     </section>
   );
@@ -536,6 +729,24 @@ export default function App() {
               { label: "Avg", className: "legend-avg" },
             ]}
           />
+          <div className="value-explainer">
+            <div title="Value is the raw gap between the fast EMA2 and slow EMA3 at the default settings.">
+              <span>Value</span>
+              <p>Raw EMA2 minus EMA3 gap.</p>
+            </div>
+            <div title="Avg is an average of Value and represents the gap's recent normal baseline.">
+              <span>Avg</span>
+              <p>Recent normal gap.</p>
+            </div>
+            <div title="Diff is the raw Value gap minus its recent Avg baseline.">
+              <span>Diff</span>
+              <p>Value minus Avg.</p>
+            </div>
+            <aside>
+              <strong>Pulling away:</strong> when Value moves away from Avg, Diff expands.
+              <strong>Catching up:</strong> when Avg catches Value, Diff shrinks.
+            </aside>
+          </div>
           <LineChart
             rows={rows}
             activeIndex={activeRow.index}
@@ -551,9 +762,10 @@ export default function App() {
         <section className="chart-panel card">
           <PanelHeader
             eyebrow="Panel 3"
-            title="Diff vs remembered thresholds"
-            description="UpperBand and LowerBand use only the previous N Diff values. Break markers are the arrow events."
+            title="Diff histogram + remembered thresholds"
+            description="Bars show Diff above or below zero. Bright bars are expanding; muted bars are shrinking. UpperBand and LowerBand still use only the previous N Diff values."
             legends={[
+              { label: "Histogram", className: "legend-histogram" },
               { label: "Diff", className: "legend-diff" },
               { label: "UpperBand", className: "legend-upper" },
               { label: "LowerBand", className: "legend-lower" },
@@ -565,6 +777,7 @@ export default function App() {
             accent={accent}
             onHover={setActiveIndex}
             showBreaks
+            showHistogram
             series={[
               { label: "Diff", className: "diff-line", getValue: (row) => row.diff },
               {
@@ -582,10 +795,24 @@ export default function App() {
         </section>
       </main>
 
-      <MemoryScoreboard row={activeRow} settings={settings} />
+      <MemoryScoreboard
+        row={activeRow}
+        previousRow={rows[activeRow.index - 1]}
+        settings={settings}
+      />
       <ArrowTable rows={rows} activeIndex={activeRow.index} onHover={setActiveIndex} />
 
       <section className="explanation-grid">
+        <article className="card teaching-box">
+          <span className="eyebrow">What this app teaches</span>
+          <h2>From EMA gap to remembered break</h2>
+          <p>
+            An arrow is not just an EMA gap. First, the app checks whether the EMA2/EMA3
+            gap is unusual compared with its recent normal baseline. That creates Diff.
+            Then Diff is compared against previous N Diff values. An arrow appears only
+            when the current Diff breaks the remembered Diff threshold.
+          </p>
+        </article>
         <article className="card">
           <span className="eyebrow">Reading the indicator</span>
           <h2>The calculation story</h2>

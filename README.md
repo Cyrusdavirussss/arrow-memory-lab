@@ -7,8 +7,10 @@ arrow indicators.
 
 - Candlestick price chart with fast/slow averages and arrow signals
 - Value versus Avg
-- Diff versus UpperBand and LowerBand
+- Diff histogram with expanding/shrinking colors, Diff line, UpperBand, and LowerBand
 - The exact previous N Diff values used for each threshold
+- A six-step calculation story for every hovered candle
+- Exact threshold and crossover explanations when no arrow prints
 - Arrow classifications: Fresh, Reinforcement, and Defeat
 - CSV, TSV, and JSON OHLC import
 
