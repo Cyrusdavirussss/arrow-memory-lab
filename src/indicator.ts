@@ -5,6 +5,7 @@ import type {
   Candle,
   Direction,
   IndicatorSettings,
+  ValueAvgState,
 } from "./types";
 
 function ema(values: Array<number | null>, length: number): Array<number | null> {
@@ -66,6 +67,59 @@ function classifyArrow(
   return "Fresh / after forgotten memory";
 }
 
+function classifyValueAvgState(
+  index: number,
+  values: Array<number | null>,
+  avgs: Array<number | null>,
+  diffs: Array<number | null>,
+): ValueAvgState {
+  const currentDiff = diffs[index];
+  const previousDiff = diffs[index - 1];
+  const currentValue = values[index];
+  const previousValue = values[index - 1];
+  const currentAvg = avgs[index];
+  const previousAvg = avgs[index - 1];
+
+  if (
+    currentDiff === null ||
+    previousDiff === null ||
+    currentValue === null ||
+    previousValue === null ||
+    currentAvg === null ||
+    previousAvg === null
+  ) {
+    return "Neutral";
+  }
+
+  const currentDistance = Math.abs(currentDiff);
+  const previousDistance = Math.abs(previousDiff);
+  const distanceChange = currentDistance - previousDistance;
+  const reference = Math.max(currentDistance, previousDistance, 0.000001);
+  const materialChange = reference * 0.08;
+  const valueChange = currentValue - previousValue;
+  const avgChange = currentAvg - previousAvg;
+  const avgMovedTowardValue =
+    previousDiff !== 0 && Math.sign(avgChange) === Math.sign(previousDiff);
+
+  if (
+    distanceChange < -materialChange &&
+    avgMovedTowardValue &&
+    Math.abs(avgChange) >= Math.abs(valueChange) * 0.45
+  ) {
+    return "Catch-up";
+  }
+
+  if (distanceChange > materialChange) {
+    return "Expansion";
+  }
+
+  if (distanceChange < -materialChange) {
+    return "Compression";
+  }
+
+  return "Neutral";
+}
+
 export function calculateIndicator(
   candles: Candle[],
   settings: IndicatorSettings,
@@ -74,6 +128,7 @@ export function calculateIndicator(
   const closeValues = closes.map((value) => value as number | null);
   const fast = movingAverage(closeValues, settings.fastLength, settings.averageType);
   const slow = movingAverage(closeValues, settings.slowLength, settings.averageType);
+  const ema8 = ema(closeValues, 8);
   const value = closes.map((_, index) => {
     if (fast[index] === null || slow[index] === null) {
       return null;
@@ -142,9 +197,11 @@ export function calculateIndicator(
       index,
       fastAverage: fast[index],
       slowAverage: slow[index],
+      ema8: ema8[index],
       value: value[index],
       avg: avg[index],
       diff: currentDiff,
+      valueAvgState: classifyValueAvgState(index, value, avg, diff),
       upperBand,
       lowerBand,
       upArrow,

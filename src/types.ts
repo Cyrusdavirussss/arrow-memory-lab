@@ -1,5 +1,6 @@
 export type AverageType = "EMA" | "SMA";
 export type Direction = "up" | "down";
+export type ValueAvgState = "Expansion" | "Compression" | "Catch-up" | "Neutral";
 export type ArrowClassification =
   | "Fresh / after forgotten memory"
   | "Reinforcement"
@@ -31,9 +32,11 @@ export interface CalculatedCandle extends Candle {
   index: number;
   fastAverage: number | null;
   slowAverage: number | null;
+  ema8: number | null;
   value: number | null;
   avg: number | null;
   diff: number | null;
+  valueAvgState: ValueAvgState;
   upperBand: number | null;
   lowerBand: number | null;
   upArrow: boolean;

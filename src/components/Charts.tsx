@@ -13,6 +13,10 @@ interface SharedChartProps {
   onHover: (index: number) => void;
 }
 
+interface PriceChartProps extends SharedChartProps {
+  showEma8?: boolean;
+}
+
 interface Scale {
   min: number;
   max: number;
@@ -133,6 +137,46 @@ function SharedHighlights({
   );
 }
 
+function stateZoneClass(state: CalculatedCandle["valueAvgState"]) {
+  if (state === "Expansion") return "state-zone-expansion";
+  if (state === "Compression") return "state-zone-compression";
+  if (state === "Catch-up") return "state-zone-catchup";
+  return "";
+}
+
+function ValueAvgStateZones({
+  rows,
+  height,
+  x,
+  cellWidth,
+}: {
+  rows: CalculatedCandle[];
+  height: number;
+  x: (index: number) => number;
+  cellWidth: number;
+}) {
+  return (
+    <g className="state-zones">
+      {rows.map((row, index) => {
+        const className = stateZoneClass(row.valueAvgState);
+        if (!className) return null;
+        return (
+          <rect
+            key={`state-${row.index}`}
+            className={`state-zone ${className}`}
+            x={x(index) - cellWidth / 2}
+            y={TOP}
+            width={cellWidth}
+            height={height - TOP - BOTTOM}
+          >
+            <title>{row.valueAvgState}</title>
+          </rect>
+        );
+      })}
+    </g>
+  );
+}
+
 function HoverTargets({
   rows,
   height,
@@ -169,14 +213,21 @@ export function PriceChart({
   activeIndex,
   accent,
   onHover,
-}: SharedChartProps) {
+  showEma8 = false,
+}: PriceChartProps) {
   const height = 340;
   const plotWidth = WIDTH - LEFT - RIGHT;
   const cellWidth = plotWidth / rows.length;
   const bodyWidth = Math.max(2, Math.min(7, cellWidth * 0.62));
   const x = (index: number) => LEFT + (index + 0.5) * cellWidth;
   const scale = createScale(
-    rows.flatMap((row) => [row.high, row.low, row.fastAverage ?? row.close, row.slowAverage ?? row.close]),
+    rows.flatMap((row) => [
+      row.high,
+      row.low,
+      row.fastAverage ?? row.close,
+      row.slowAverage ?? row.close,
+      ...(showEma8 ? [row.ema8 ?? row.close] : []),
+    ]),
     height,
   );
   const active = rows[activeIndex];
@@ -223,6 +274,12 @@ export function PriceChart({
         className="series-line slow-line"
         d={pathFor(rows, (row) => row.slowAverage, x, scale.y)}
       />
+      {showEma8 && (
+        <path
+          className="series-line ema8-line"
+          d={pathFor(rows, (row) => row.ema8, x, scale.y)}
+        />
+      )}
       <g className="arrows" style={{ color: accent }}>
         {rows.map((row, index) => {
           if (row.upArrow) {
@@ -269,6 +326,7 @@ interface LineChartProps extends SharedChartProps {
   series: LineSeries[];
   showBreaks?: boolean;
   showHistogram?: boolean;
+  showStateZones?: boolean;
 }
 
 export function LineChart({
@@ -279,6 +337,7 @@ export function LineChart({
   series,
   showBreaks = false,
   showHistogram = false,
+  showStateZones = false,
   height = 220,
 }: LineChartProps) {
   const plotWidth = WIDTH - LEFT - RIGHT;
@@ -311,6 +370,14 @@ export function LineChart({
       aria-label={`${series.map((item) => item.label).join(", ")} chart`}
       viewBox={`0 0 ${WIDTH} ${height}`}
     >
+      {showStateZones && (
+        <ValueAvgStateZones
+          rows={rows}
+          height={height}
+          x={x}
+          cellWidth={cellWidth}
+        />
+      )}
       <ChartGrid scale={scale} height={height} />
       {scale.min < 0 && scale.max > 0 && (
         <line
