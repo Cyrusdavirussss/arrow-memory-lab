@@ -13,6 +13,18 @@ import type {
 type Preset = "Red" | "Pink";
 type BreakLabel = "Small break" | "Medium break" | "Large break";
 type SetupLabel = "Compression -> Expansion" | "Already extended" | "Choppy / unclear";
+type RhythmLabel =
+  | "Normal rhythm"
+  | "Break of rhythm"
+  | "Strong break of rhythm"
+  | "Choppy / unclear";
+type DiffStoryLabel =
+  | "Diff expanding upward"
+  | "Diff expanding downward"
+  | "Diff compressing toward zero"
+  | "Diff snapped through zero"
+  | "Diff neutral / unclear";
+type TrainingGuess = "expanded" | "compressed" | "snapped";
 
 const presetConfig: Record<Preset, { memoryLength: number; accent: string }> = {
   Red: { memoryLength: 4, accent: "#ff4d61" },
@@ -73,9 +85,10 @@ function mean(values: number[]) {
 }
 
 function stateClass(state: ValueAvgState) {
-  if (state === "Expansion") return "state-expansion";
-  if (state === "Compression") return "state-compression";
-  if (state === "Catch-up") return "state-catchup";
+  if (state === "Bullish expansion") return "state-expansion";
+  if (state === "Bearish expansion") return "state-bearish";
+  if (state === "Compression / catch-up") return "state-compression";
+  if (state === "Snap-through") return "state-snap";
   return "state-neutral";
 }
 
@@ -190,6 +203,231 @@ function getEma8Context(row: CalculatedCandle, rows: CalculatedCandle[]) {
   };
 }
 
+function getClosePosition(row: Candle) {
+  const range = Math.max(row.high - row.low, 0);
+  if (range === 0) return 0.5;
+  return (row.close - row.low) / range;
+}
+
+function getCandleBody(row: Candle) {
+  return Math.abs(row.close - row.open);
+}
+
+function getCandleAnatomy(
+  row: CalculatedCandle,
+  previousRow: CalculatedCandle | undefined,
+  rows: CalculatedCandle[],
+) {
+  const body = getCandleBody(row);
+  const range = Math.max(row.high - row.low, 0);
+  const upperWick = row.high - Math.max(row.open, row.close);
+  const lowerWick = Math.min(row.open, row.close) - row.low;
+  const closePosition = getClosePosition(row);
+  const bodyRatio = range > 0 ? body / range : 0;
+  const upperWickRatio = range > 0 ? upperWick / range : 0;
+  const lowerWickRatio = range > 0 ? lowerWick / range : 0;
+  const recentRows = rows.slice(Math.max(0, row.index - 5), row.index);
+  const averageRange = mean(recentRows.map((item) => item.high - item.low));
+  const labels: string[] = [];
+
+  if (row.close > row.open && closePosition >= 0.7 && bodyRatio >= 0.45) {
+    labels.push("Strong bullish close");
+  }
+  if (row.close < row.open && closePosition <= 0.3 && bodyRatio >= 0.45) {
+    labels.push("Strong bearish close");
+  }
+  if (closePosition >= 0.8) labels.push("Close near high");
+  if (closePosition <= 0.2) labels.push("Close near low");
+  if (upperWickRatio >= 0.35 && upperWick > body) {
+    labels.push("Long upper wick rejection");
+  }
+  if (lowerWickRatio >= 0.35 && lowerWick > body) {
+    labels.push("Long lower wick rejection");
+  }
+  if (bodyRatio <= 0.25) labels.push("Small body / compression candle");
+  if (averageRange > 0 && range >= averageRange * 1.45) labels.push("Wide range candle");
+  if (
+    previousRow &&
+    row.high <= previousRow.high &&
+    row.low >= previousRow.low
+  ) {
+    labels.push("Inside candle");
+  } else if (
+    previousRow &&
+    row.low <= previousRow.high &&
+    row.high >= previousRow.low
+  ) {
+    labels.push("Overlapping candle");
+  }
+
+  return {
+    body,
+    range,
+    upperWick,
+    lowerWick,
+    closePosition,
+    labels: labels.length ? labels : ["Quiet / unclear candle"],
+  };
+}
+
+function getRecentRhythm(row: CalculatedCandle, rows: CalculatedCandle[]) {
+  const previousRows = rows.slice(Math.max(0, row.index - 5), row.index);
+  const previousRow = rows[row.index - 1];
+  const body = getCandleBody(row);
+  const range = Math.max(row.high - row.low, 0);
+  const closeChange = previousRow ? Math.abs(row.close - previousRow.close) : 0;
+  const closePosition = getClosePosition(row);
+  const averageBody = mean(previousRows.map(getCandleBody));
+  const averageRange = mean(previousRows.map((item) => Math.max(item.high - item.low, 0)));
+  const previousCloseChanges = previousRows
+    .map((item) => {
+      const prior = rows[item.index - 1];
+      return prior ? Math.abs(item.close - prior.close) : null;
+    })
+    .filter((item): item is number => item !== null);
+  const averageCloseChange = mean(previousCloseChanges);
+  const averageClosePosition = mean(previousRows.map(getClosePosition));
+
+  if (previousRows.length < 3) {
+    return {
+      label: "Choppy / unclear" as RhythmLabel,
+      body,
+      range,
+      closeChange,
+      closePosition,
+      averageBody,
+      averageRange,
+      averageCloseChange,
+      averageClosePosition,
+    };
+  }
+
+  const bodyBreak = averageBody > 0 && body > averageBody * 1.55;
+  const rangeBreak = averageRange > 0 && range > averageRange * 1.55;
+  const closeBreak =
+    averageCloseChange > 0 && closeChange > averageCloseChange * 1.55;
+  const positionBreak = Math.abs(closePosition - averageClosePosition) > 0.26;
+  const score = [bodyBreak, rangeBreak, closeBreak, positionBreak].filter(Boolean).length;
+  const label: RhythmLabel =
+    score >= 3
+      ? "Strong break of rhythm"
+      : score >= 2
+        ? "Break of rhythm"
+        : "Normal rhythm";
+
+  return {
+    label,
+    body,
+    range,
+    closeChange,
+    closePosition,
+    averageBody,
+    averageRange,
+    averageCloseChange,
+    averageClosePosition,
+  };
+}
+
+function getDiffDirectionStory(
+  row: CalculatedCandle,
+  previousRow: CalculatedCandle | undefined,
+) {
+  const currentDiff = row.diff;
+  const previousDiff = previousRow?.diff;
+
+  if (currentDiff === null || previousDiff === null || previousDiff === undefined) {
+    return {
+      label: "Diff neutral / unclear" as DiffStoryLabel,
+      expanded: false,
+      towardZero: false,
+      flipped: false,
+      valueMoved: "waiting for enough data",
+      explanation: "Diff is still warming up.",
+    };
+  }
+
+  const distanceNow = Math.abs(currentDiff);
+  const distancePrev = Math.abs(previousDiff);
+  const flipped =
+    (previousDiff > 0 && currentDiff < 0) ||
+    (previousDiff < 0 && currentDiff > 0);
+  const expanded = distanceNow > distancePrev;
+  const towardZero = distanceNow < distancePrev;
+  const valueMoved = flipped
+    ? "crossed through Avg"
+    : expanded
+      ? "moved away from Avg"
+      : towardZero
+        ? "moved toward Avg"
+        : "stayed near Avg";
+  const label: DiffStoryLabel = flipped
+    ? "Diff snapped through zero"
+    : expanded && currentDiff > 0
+      ? "Diff expanding upward"
+      : expanded && currentDiff < 0
+        ? "Diff expanding downward"
+        : towardZero
+          ? "Diff compressing toward zero"
+          : "Diff neutral / unclear";
+  const explanation = flipped
+    ? "Value crossed through Avg. Diff flipped direction."
+    : expanded
+      ? "Value moved away from Avg. Diff expanded."
+      : towardZero
+        ? "Value moved toward Avg. Diff compressed."
+        : "Diff barely changed.";
+
+  return {
+    label,
+    expanded,
+    towardZero,
+    flipped,
+    valueMoved,
+    explanation,
+  };
+}
+
+function trainingAnswerFor(
+  row: CalculatedCandle,
+  previousRow: CalculatedCandle | undefined,
+): TrainingGuess | null {
+  const story = getDiffDirectionStory(row, previousRow);
+  if (story.flipped) return "snapped";
+  if (story.expanded) return "expanded";
+  if (story.towardZero) return "compressed";
+  return null;
+}
+
+function buildPreArrowStory(
+  row: CalculatedCandle,
+  rows: CalculatedCandle[],
+  memoryLength: number,
+) {
+  if (!row.upArrow && !row.downArrow) return null;
+  const previousRow = rows[row.index - 1];
+  const setup = getPreArrowSetup(row, rows, memoryLength);
+  const breakQuality = getBreakQuality(row);
+  const rhythm = getRecentRhythm(row, rows);
+  const diffStory = getDiffDirectionStory(row, previousRow);
+  const beatText = breakQuality
+    ? breakQuality.label === "Large break"
+      ? `smashed memory by ${formatNumber(breakQuality.beatAmount)}`
+      : breakQuality.label === "Small break"
+        ? `barely beat memory by ${formatNumber(breakQuality.beatAmount)}`
+        : `beat memory by ${formatNumber(breakQuality.beatAmount)}`
+    : "beat memory";
+
+  if (setup?.label === "Compression -> Expansion") {
+    return `This arrow came after compression. The candle was a ${rhythm.label.toLowerCase()}, Value ${diffStory.valueMoved}, Diff expanded, and current Diff ${beatText}.`;
+  }
+
+  if (setup?.label === "Already extended") {
+    return `This arrow did not come from clean compression. Diff was already extended, so this may be a continuation or late-stage record. Current Diff ${beatText}.`;
+  }
+
+  return `This arrow came from a choppy setup. Value ${diffStory.valueMoved}, Diff ${diffStory.expanded ? "expanded" : "did not expand cleanly"}, and current Diff ${beatText}.`;
+}
+
 function getNoArrowExplanation(
   row: CalculatedCandle,
   previousRow: CalculatedCandle | undefined,
@@ -244,6 +482,7 @@ function buildVisibleStory(
   const ema2Change = delta(row.fastAverage, previousRow.fastAverage);
   const ema3Change = delta(row.slowAverage, previousRow.slowAverage);
   const diffChange = delta(row.diff, previousRow.diff);
+  const diffStory = getDiffDirectionStory(row, previousRow);
   const movedAway =
     row.diff !== null &&
     previousRow.diff !== null &&
@@ -264,7 +503,7 @@ function buildVisibleStory(
       ? "A Down arrow printed."
       : "No arrow printed.";
 
-  return `This candle closed ${closeDirection} than the previous candle by ${signedNumber(closeChange, 4)}. EMA2 moved by ${signedNumber(ema2Change)} and EMA3 moved by ${signedNumber(ema3Change)}. This changed Value by ${signedNumber(valueChange)}. Value ${relationship}, so Diff ${diffVerb} by ${signedNumber(diffChange)}. ${arrowText}`;
+  return `This candle closed ${closeDirection} than the previous candle by ${signedNumber(closeChange, 4)}. EMA2 moved by ${signedNumber(ema2Change)} and EMA3 moved by ${signedNumber(ema3Change)}. This changed Value by ${signedNumber(valueChange)}. Value ${relationship}, so Diff ${diffVerb} by ${signedNumber(diffChange)}. ${diffStory.explanation} ${arrowText}`;
 }
 
 function Stat({
@@ -340,16 +579,22 @@ function PanelHeader({
 function CandleImpactPanel({
   row,
   previousRow,
+  rows,
   settings,
+  hideHiddenValues,
 }: {
   row: CalculatedCandle;
   previousRow: CalculatedCandle | undefined;
+  rows: CalculatedCandle[];
   settings: IndicatorSettings;
+  hideHiddenValues: boolean;
 }) {
   const closeChange = previousRow ? row.close - previousRow.close : null;
   const valueChange = delta(row.value, previousRow?.value);
   const avgChange = delta(row.avg, previousRow?.avg);
   const diffChange = delta(row.diff, previousRow?.diff);
+  const anatomy = getCandleAnatomy(row, previousRow, rows);
+  const rhythm = getRecentRhythm(row, rows);
   const movedAway =
     row.diff !== null &&
     previousRow?.diff !== null &&
@@ -368,7 +613,9 @@ function CandleImpactPanel({
         : closeChange < 0
           ? "This candle closed lower than the previous candle."
           : "This candle closed unchanged from the previous candle.";
-  const relationshipText = movedAway
+  const relationshipText = hideHiddenValues
+    ? "Training mode is hiding Value, Avg, and Diff until you reveal the answer."
+    : movedAway
     ? "Value moved away from Avg, so Diff expanded."
     : movedCloser
       ? "Value came closer to Avg, so Diff shrank."
@@ -381,8 +628,8 @@ function CandleImpactPanel({
           <span className="eyebrow">Visible candle impact</span>
           <h2>Candle Close Impact</h2>
         </div>
-        <span className={`state-pill ${stateClass(row.valueAvgState)}`}>
-          {row.valueAvgState}
+        <span className={`state-pill ${hideHiddenValues ? "state-neutral" : stateClass(row.valueAvgState)}`}>
+          {hideHiddenValues ? "Hidden for training" : row.valueAvgState}
         </span>
       </div>
       <div className="impact-grid">
@@ -397,17 +644,125 @@ function CandleImpactPanel({
           label={`EMA3 change (${settings.slowLength})`}
           value={signedNumber(delta(row.slowAverage, previousRow?.slowAverage))}
         />
-        <Stat label="Value change" value={signedNumber(valueChange)} />
-        <Stat label="Avg change" value={signedNumber(avgChange)} />
-        <Stat label="Diff change" value={signedNumber(diffChange)} />
+        <Stat label="Value change" value={hideHiddenValues ? "hidden" : signedNumber(valueChange)} />
+        <Stat label="Avg change" value={hideHiddenValues ? "hidden" : signedNumber(avgChange)} />
+        <Stat label="Diff change" value={hideHiddenValues ? "hidden" : signedNumber(diffChange)} />
       </div>
       <p className="simple-explainer">
         {closeText} EMA2 reacted by{" "}
         {signedNumber(delta(row.fastAverage, previousRow?.fastAverage))} and EMA3
-        reacted by {signedNumber(delta(row.slowAverage, previousRow?.slowAverage))}.
-        This changed Value by {signedNumber(valueChange)}. {relationshipText}
+        reacted by {signedNumber(delta(row.slowAverage, previousRow?.slowAverage))}.{" "}
+        {hideHiddenValues
+          ? relationshipText
+          : `This changed Value by ${signedNumber(valueChange)}. ${relationshipText}`}
       </p>
+      <div className="mini-panel-grid">
+        <div className="mini-panel">
+          <div className="mini-heading">
+            <span className="eyebrow">Candle anatomy</span>
+            <strong>Wick = attempt. Close = final decision.</strong>
+          </div>
+          <div className="mini-stat-grid">
+            <Stat label="Body" value={formatNumber(anatomy.body, 4)} />
+            <Stat label="Range" value={formatNumber(anatomy.range, 4)} />
+            <Stat label="Upper wick" value={formatNumber(anatomy.upperWick, 4)} />
+            <Stat label="Lower wick" value={formatNumber(anatomy.lowerWick, 4)} />
+            <Stat label="Close position" value={`${(anatomy.closePosition * 100).toFixed(0)}%`} />
+          </div>
+          <div className="label-row">
+            {anatomy.labels.map((label) => (
+              <span key={label} className="read-label">
+                {label}
+              </span>
+            ))}
+          </div>
+        </div>
+        <div className="mini-panel">
+          <div className="mini-heading">
+            <span className="eyebrow">Recent rhythm</span>
+            <strong>{rhythm.label}</strong>
+          </div>
+          <div className="mini-stat-grid">
+            <Stat label="Body vs avg 5" value={`${formatNumber(rhythm.body, 4)} / ${formatNumber(rhythm.averageBody, 4)}`} />
+            <Stat label="Range vs avg 5" value={`${formatNumber(rhythm.range, 4)} / ${formatNumber(rhythm.averageRange, 4)}`} />
+            <Stat label="Close move vs avg 5" value={`${formatNumber(rhythm.closeChange, 4)} / ${formatNumber(rhythm.averageCloseChange, 4)}`} />
+            <Stat label="Close pos vs avg" value={`${(rhythm.closePosition * 100).toFixed(0)}% / ${(rhythm.averageClosePosition * 100).toFixed(0)}%`} />
+          </div>
+          <p>
+            This checks whether the close disturbed the last 5 candles enough to
+            help Value escape Avg.
+          </p>
+        </div>
+      </div>
     </section>
+  );
+}
+
+function TrainingPanel({
+  row,
+  previousRow,
+  guess,
+  revealed,
+  onGuess,
+  onReveal,
+}: {
+  row: CalculatedCandle;
+  previousRow: CalculatedCandle | undefined;
+  guess: TrainingGuess | null;
+  revealed: boolean;
+  onGuess: (guess: TrainingGuess) => void;
+  onReveal: () => void;
+}) {
+  const answer = trainingAnswerFor(row, previousRow);
+  const diffStory = getDiffDirectionStory(row, previousRow);
+  const guessMatches = revealed && guess !== null && answer !== null && guess === answer;
+
+  return (
+    <div className="training-panel">
+      <div>
+        <span className="eyebrow">Training mode</span>
+        <h3>Based on the candle, what happened to Diff?</h3>
+        <p>Guess first. Then reveal the hidden Value, Avg, and Diff.</p>
+      </div>
+      <div className="training-actions">
+        {([
+          ["expanded", "Diff expanded"],
+          ["compressed", "Diff compressed"],
+          ["snapped", "Snap-through"],
+        ] as Array<[TrainingGuess, string]>).map(([value, label]) => (
+          <button
+            key={value}
+            className={guess === value ? "selected" : ""}
+            onClick={() => onGuess(value)}
+          >
+            {label}
+          </button>
+        ))}
+        <button className="primary-button reveal-button" onClick={onReveal}>
+          Reveal answer
+        </button>
+      </div>
+      {revealed && (
+        <div className="training-answer">
+          <span className={`state-pill ${stateClass(row.valueAvgState)}`}>
+            {row.valueAvgState}
+          </span>
+          <div className="mini-stat-grid">
+            <Stat label="Value" value={formatNumber(row.value)} />
+            <Stat label="Avg" value={formatNumber(row.avg)} />
+            <Stat label="Diff" value={formatNumber(row.diff)} />
+          </div>
+          <p>
+            {guess
+              ? guessMatches
+                ? "Your read matched the hidden calculation."
+                : `Your read was ${guess}; the hidden result was ${answer ?? "unclear"}.`
+              : "No guess selected."}{" "}
+            {diffStory.explanation}
+          </p>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -416,11 +771,21 @@ function BridgeScoreboard({
   previousRow,
   rows,
   settings,
+  trainingMode,
+  trainingRevealed,
+  trainingGuess,
+  onTrainingGuess,
+  onRevealTraining,
 }: {
   row: CalculatedCandle;
   previousRow: CalculatedCandle | undefined;
   rows: CalculatedCandle[];
   settings: IndicatorSettings;
+  trainingMode: boolean;
+  trainingRevealed: boolean;
+  trainingGuess: TrainingGuess | null;
+  onTrainingGuess: (guess: TrainingGuess) => void;
+  onRevealTraining: () => void;
 }) {
   const highValue =
     row.memory.length > 0 ? Math.max(...row.memory.map((item) => item.value)) : null;
@@ -434,6 +799,9 @@ function BridgeScoreboard({
   const setup = getPreArrowSetup(row, rows, settings.memoryLength);
   const noArrow = getNoArrowExplanation(row, previousRow);
   const ema8Context = getEma8Context(row, rows);
+  const diffStory = getDiffDirectionStory(row, previousRow);
+  const preArrowStory = buildPreArrowStory(row, rows, settings.memoryLength);
+  const hideHiddenValues = trainingMode && !trainingRevealed;
 
   return (
     <section className="scoreboard card bridge-scoreboard">
@@ -453,11 +821,44 @@ function BridgeScoreboard({
         <p>{buildVisibleStory(row, previousRow)}</p>
       </div>
 
+      {trainingMode && (
+        <TrainingPanel
+          row={row}
+          previousRow={previousRow}
+          guess={trainingGuess}
+          revealed={trainingRevealed}
+          onGuess={onTrainingGuess}
+          onReveal={onRevealTraining}
+        />
+      )}
+
+      <div className="diff-story-card">
+        <div>
+          <span className="eyebrow">Diff direction story</span>
+          <h3>{hideHiddenValues ? "Hidden for training" : diffStory.label}</h3>
+        </div>
+        {hideHiddenValues ? (
+          <p>Make your guess, then reveal the hidden Diff behavior.</p>
+        ) : (
+          <>
+            <div className="boolean-row compact">
+              <span>Expanded: <strong>{diffStory.expanded ? "YES" : "NO"}</strong></span>
+              <span>Toward zero: <strong>{diffStory.towardZero ? "YES" : "NO"}</strong></span>
+              <span>Flipped sign: <strong>{diffStory.flipped ? "YES" : "NO"}</strong></span>
+              <span>Value: <strong>{diffStory.valueMoved}</strong></span>
+            </div>
+            <p>{diffStory.explanation}</p>
+          </>
+        )}
+      </div>
+
       <div className="stats-grid bridge-stats">
-        <Stat label="Current Diff" value={formatNumber(row.diff)} />
+        <Stat label="Value" value={hideHiddenValues ? "hidden" : formatNumber(row.value)} />
+        <Stat label="Avg" value={hideHiddenValues ? "hidden" : formatNumber(row.avg)} />
+        <Stat label="Current Diff" value={hideHiddenValues ? "hidden" : formatNumber(row.diff)} />
         <Stat label="UpperBand" value={formatNumber(row.upperBand)} tone={beatsUpper ? "up" : undefined} />
         <Stat label="LowerBand" value={formatNumber(row.lowerBand)} tone={beatsLower ? "down" : undefined} />
-        <Stat label="Previous Diff" value={formatNumber(previousRow?.diff)} />
+        <Stat label="Previous Diff" value={hideHiddenValues ? "hidden" : formatNumber(previousRow?.diff)} />
         <Stat label="Previous UpperBand" value={formatNumber(previousRow?.upperBand)} />
         <Stat label="Previous LowerBand" value={formatNumber(previousRow?.lowerBand)} />
         <Stat label="Value / Avg state" value={row.valueAvgState} />
@@ -468,16 +869,28 @@ function BridgeScoreboard({
         <div className="quality-card">
           <div>
             <span className="eyebrow">Arrow quality / memory difficulty</span>
-            <h3>{breakQuality.direction} arrow beat {breakQuality.thresholdName}</h3>
-            <p>
-              Current Diff {formatNumber(row.diff)} beat threshold{" "}
-              {formatNumber(breakQuality.threshold)} by{" "}
-              {formatNumber(breakQuality.beatAmount)}.
-            </p>
+            {hideHiddenValues ? (
+              <>
+                <h3>Hidden for training</h3>
+                <p>Reveal the answer to see beat amount and memory difficulty.</p>
+              </>
+            ) : (
+              <>
+                <h3>{breakQuality.direction} arrow beat {breakQuality.thresholdName}</h3>
+                <p>
+                  Current Diff {formatNumber(row.diff)} beat threshold{" "}
+                  {formatNumber(breakQuality.threshold)} by{" "}
+                  {formatNumber(breakQuality.beatAmount)}.
+                </p>
+                {preArrowStory && <p className="pre-arrow-story">{preArrowStory}</p>}
+              </>
+            )}
           </div>
-          <span className={`quality-badge ${breakLabelClass(breakQuality.label)}`}>
-            {breakQuality.label}
-          </span>
+          {!hideHiddenValues && (
+            <span className={`quality-badge ${breakLabelClass(breakQuality.label)}`}>
+              {breakQuality.label}
+            </span>
+          )}
         </div>
       ) : (
         <div className="decision-box decision-no-arrow">
@@ -486,12 +899,16 @@ function BridgeScoreboard({
           </div>
           <div>
             <h3>Why no arrow?</h3>
-            <p>{noArrow}</p>
+            <p>
+              {hideHiddenValues
+                ? "Hidden for training. Reveal the answer to see the Diff test."
+                : noArrow}
+            </p>
             <code>
-              Current Diff {formatNumber(row.diff)} | UpperBand{" "}
+              Current Diff {hideHiddenValues ? "hidden" : formatNumber(row.diff)} | UpperBand{" "}
               {formatNumber(row.upperBand)} | LowerBand {formatNumber(row.lowerBand)}
               <br />
-              Previous Diff {formatNumber(previousRow?.diff)} | Previous UpperBand{" "}
+              Previous Diff {hideHiddenValues ? "hidden" : formatNumber(previousRow?.diff)} | Previous UpperBand{" "}
               {formatNumber(previousRow?.upperBand)} | Previous LowerBand{" "}
               {formatNumber(previousRow?.lowerBand)}
             </code>
@@ -513,9 +930,9 @@ function BridgeScoreboard({
             </p>
           </div>
           <code>
-            avg previous |Diff| {formatNumber(setup.avgAbsDiff)} | previous |Diff|{" "}
-            {formatNumber(setup.previousAbsDiff)} | memory range{" "}
-            {formatNumber(setup.memoryRange)}
+            {hideHiddenValues
+              ? "Diff details hidden for training."
+              : `avg previous |Diff| ${formatNumber(setup.avgAbsDiff)} | previous |Diff| ${formatNumber(setup.previousAbsDiff)} | memory range ${formatNumber(setup.memoryRange)}`}
           </code>
         </div>
       )}
@@ -526,7 +943,9 @@ function BridgeScoreboard({
           <p>The current candle is not included in its own threshold.</p>
         </div>
         <div className="memory-verdict">
-          {breakQuality
+          {hideHiddenValues
+            ? "Memory values hidden for training"
+            : breakQuality
             ? `${breakQuality.label}: beat by ${formatNumber(breakQuality.beatAmount)}`
             : beatsUpper
               ? "Beat upper, crossover failed"
@@ -550,7 +969,7 @@ function BridgeScoreboard({
               title={item.time}
             >
               <span>#{item.index + 1}</span>
-              <strong>{formatNumber(item.value)}</strong>
+              <strong>{hideHiddenValues ? "hidden" : formatNumber(item.value)}</strong>
               <small>
                 {isBeaten
                   ? row.upArrow
@@ -635,6 +1054,7 @@ function ArrowTable({
               <th>Beat amount</th>
               <th>Quality</th>
               <th>Setup</th>
+              <th>Pre-arrow story</th>
               <th>Learning class</th>
             </tr>
           </thead>
@@ -642,6 +1062,7 @@ function ArrowTable({
             {arrows.map((row) => {
               const breakQuality = getBreakQuality(row);
               const setup = getPreArrowSetup(row, rows, settings.memoryLength);
+              const preArrowStory = buildPreArrowStory(row, rows, settings.memoryLength);
               const direction = row.upArrow ? "Up" : "Down";
               return (
                 <tr
@@ -672,6 +1093,7 @@ function ArrowTable({
                   <td>
                     <span className="setup-badge">{setup?.label ?? "n/a"}</span>
                   </td>
+                  <td className="story-cell">{preArrowStory}</td>
                   <td>
                     <span
                       className={`classification ${classificationClass(row.classification)}`}
@@ -684,7 +1106,7 @@ function ArrowTable({
             })}
             {arrows.length === 0 && (
               <tr>
-                <td colSpan={8} className="empty-table">
+                <td colSpan={9} className="empty-table">
                   No arrows in this dataset with the current settings.
                 </td>
               </tr>
@@ -709,6 +1131,9 @@ export default function BridgeLab() {
   const [dataError, setDataError] = useState("");
   const [showImporter, setShowImporter] = useState(false);
   const [showEma8, setShowEma8] = useState(true);
+  const [trainingMode, setTrainingMode] = useState(false);
+  const [trainingRevealed, setTrainingRevealed] = useState(false);
+  const [trainingGuess, setTrainingGuess] = useState<TrainingGuess | null>(null);
 
   const rows = useMemo(
     () => calculateIndicator(candles, settings),
@@ -716,10 +1141,16 @@ export default function BridgeLab() {
   );
   const accent = presetConfig[preset].accent;
   const activeRow = rows[Math.min(activeIndex, rows.length - 1)] ?? rows[0];
+  const hideTraining = trainingMode && !trainingRevealed;
 
   useEffect(() => {
     setActiveIndex((index) => Math.min(index, Math.max(0, rows.length - 1)));
   }, [rows.length]);
+
+  useEffect(() => {
+    setTrainingRevealed(false);
+    setTrainingGuess(null);
+  }, [activeRow?.index, trainingMode]);
 
   const updateSetting = <K extends keyof IndicatorSettings>(
     key: K,
@@ -848,6 +1279,12 @@ export default function BridgeLab() {
           >
             EMA8 Orange Road {showEma8 ? "on" : "off"}
           </button>
+          <button
+            className={`secondary-button toggle-button ${trainingMode ? "toggle-on" : ""}`}
+            onClick={() => setTrainingMode((value) => !value)}
+          >
+            Training mode {trainingMode ? "on" : "off"}
+          </button>
         </div>
       </section>
 
@@ -945,19 +1382,23 @@ export default function BridgeLab() {
         <CandleImpactPanel
           row={activeRow}
           previousRow={rows[activeRow.index - 1]}
+          rows={rows}
           settings={settings}
+          hideHiddenValues={hideTraining}
         />
 
         <section className="chart-panel card">
           <PanelHeader
             eyebrow="Panel 2"
             title="Value vs Avg state"
-            description="Expansion means Value is pulling away from Avg. Compression means Value is moving closer. Catch-up means Avg is catching Value."
+            description="Bullish and bearish expansion mean Value is pulling away from Avg. Snap-through means Value crossed through Avg."
             legends={[
               { label: "Value", className: "legend-value" },
               { label: "Avg", className: "legend-avg" },
-              { label: "Expansion zone", className: "legend-expansion" },
-              { label: "Compression zone", className: "legend-compression" },
+              { label: "Bullish expansion", className: "legend-expansion" },
+              { label: "Bearish expansion", className: "legend-bearish" },
+              { label: "Compression", className: "legend-compression" },
+              { label: "Snap-through", className: "legend-snap" },
             ]}
           />
           <div className="value-explainer bridge-value-explainer">
@@ -975,24 +1416,30 @@ export default function BridgeLab() {
             </div>
             <aside>
               <strong>Hovered state:</strong>{" "}
-              <span className={`state-pill ${stateClass(activeRow.valueAvgState)}`}>
-                {activeRow.valueAvgState}
+              <span className={`state-pill ${hideTraining ? "state-neutral" : stateClass(activeRow.valueAvgState)}`}>
+                {hideTraining ? "Hidden for training" : activeRow.valueAvgState}
               </span>
-              When Value pulls away from Avg, Diff expands. When Avg catches Value,
-              Diff shrinks.
+              Snap-through: Value crossed through Avg. Diff flipped direction.
             </aside>
           </div>
-          <LineChart
-            rows={rows}
-            activeIndex={activeRow.index}
-            accent={accent}
-            onHover={setActiveIndex}
-            showStateZones
-            series={[
-              { label: "Value", className: "value-line", getValue: (row) => row.value },
-              { label: "Avg", className: "avg-line", getValue: (row) => row.avg },
-            ]}
-          />
+          {hideTraining ? (
+            <div className="training-chart-cover">
+              Hidden for training. Look at the candle first, then reveal Value,
+              Avg, and Diff.
+            </div>
+          ) : (
+            <LineChart
+              rows={rows}
+              activeIndex={activeRow.index}
+              accent={accent}
+              onHover={setActiveIndex}
+              showStateZones
+              series={[
+                { label: "Value", className: "value-line", getValue: (row) => row.value },
+                { label: "Avg", className: "avg-line", getValue: (row) => row.avg },
+              ]}
+            />
+          )}
         </section>
 
         <section className="chart-panel card">
@@ -1007,27 +1454,34 @@ export default function BridgeLab() {
               { label: "LowerBand", className: "legend-lower" },
             ]}
           />
-          <LineChart
-            rows={rows}
-            activeIndex={activeRow.index}
-            accent={accent}
-            onHover={setActiveIndex}
-            showBreaks
-            showHistogram
-            series={[
-              { label: "Diff", className: "diff-line", getValue: (row) => row.diff },
-              {
-                label: "UpperBand",
-                className: "upper-line",
-                getValue: (row) => row.upperBand,
-              },
-              {
-                label: "LowerBand",
-                className: "lower-line",
-                getValue: (row) => row.lowerBand,
-              },
-            ]}
-          />
+          {hideTraining ? (
+            <div className="training-chart-cover">
+              Diff and memory are hidden for training. Make your guess, then
+              reveal the answer.
+            </div>
+          ) : (
+            <LineChart
+              rows={rows}
+              activeIndex={activeRow.index}
+              accent={accent}
+              onHover={setActiveIndex}
+              showBreaks
+              showHistogram
+              series={[
+                { label: "Diff", className: "diff-line", getValue: (row) => row.diff },
+                {
+                  label: "UpperBand",
+                  className: "upper-line",
+                  getValue: (row) => row.upperBand,
+                },
+                {
+                  label: "LowerBand",
+                  className: "lower-line",
+                  getValue: (row) => row.lowerBand,
+                },
+              ]}
+            />
+          )}
         </section>
       </main>
 
@@ -1036,6 +1490,11 @@ export default function BridgeLab() {
         previousRow={rows[activeRow.index - 1]}
         rows={rows}
         settings={settings}
+        trainingMode={trainingMode}
+        trainingRevealed={trainingRevealed}
+        trainingGuess={trainingGuess}
+        onTrainingGuess={setTrainingGuess}
+        onRevealTraining={() => setTrainingRevealed(true)}
       />
       <ArrowTable
         rows={rows}
@@ -1055,6 +1514,15 @@ export default function BridgeLab() {
             below normal. The memory threshold checks whether this Diff beat
             previous remembered Diff values. The arrow prints only if it freshly
             crosses the threshold.
+          </p>
+        </article>
+        <article className="card warning-box">
+          <span className="eyebrow">Important warning</span>
+          <h2>Arrow does not equal prediction</h2>
+          <p>
+            V2 explains how the arrow was created. It does not guarantee future
+            price movement. The arrow marks a record Diff event, not an
+            automatic trade signal.
           </p>
         </article>
         <article className="card thinkscript-note">

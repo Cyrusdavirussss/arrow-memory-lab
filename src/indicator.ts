@@ -69,52 +69,42 @@ function classifyArrow(
 
 function classifyValueAvgState(
   index: number,
-  values: Array<number | null>,
-  avgs: Array<number | null>,
   diffs: Array<number | null>,
 ): ValueAvgState {
   const currentDiff = diffs[index];
   const previousDiff = diffs[index - 1];
-  const currentValue = values[index];
-  const previousValue = values[index - 1];
-  const currentAvg = avgs[index];
-  const previousAvg = avgs[index - 1];
 
-  if (
-    currentDiff === null ||
-    previousDiff === null ||
-    currentValue === null ||
-    previousValue === null ||
-    currentAvg === null ||
-    previousAvg === null
-  ) {
+  if (currentDiff === null || previousDiff === null) {
     return "Neutral";
   }
 
-  const currentDistance = Math.abs(currentDiff);
-  const previousDistance = Math.abs(previousDiff);
-  const distanceChange = currentDistance - previousDistance;
-  const reference = Math.max(currentDistance, previousDistance, 0.000001);
-  const materialChange = reference * 0.08;
-  const valueChange = currentValue - previousValue;
-  const avgChange = currentAvg - previousAvg;
-  const avgMovedTowardValue =
-    previousDiff !== 0 && Math.sign(avgChange) === Math.sign(previousDiff);
+  const distanceNow = Math.abs(currentDiff);
+  const distancePrev = Math.abs(previousDiff);
+  const diffMove = Math.abs(currentDiff - previousDiff);
+  const reference = Math.max(distanceNow, distancePrev, 0.000001);
+  const smallChange = diffMove <= reference * 0.04;
+
+  if (smallChange) {
+    return "Neutral";
+  }
 
   if (
-    distanceChange < -materialChange &&
-    avgMovedTowardValue &&
-    Math.abs(avgChange) >= Math.abs(valueChange) * 0.45
+    (previousDiff > 0 && currentDiff < 0) ||
+    (previousDiff < 0 && currentDiff > 0)
   ) {
-    return "Catch-up";
+    return "Snap-through";
   }
 
-  if (distanceChange > materialChange) {
-    return "Expansion";
+  if (currentDiff > 0 && distanceNow > distancePrev) {
+    return "Bullish expansion";
   }
 
-  if (distanceChange < -materialChange) {
-    return "Compression";
+  if (currentDiff < 0 && distanceNow > distancePrev) {
+    return "Bearish expansion";
+  }
+
+  if (distanceNow < distancePrev) {
+    return "Compression / catch-up";
   }
 
   return "Neutral";
@@ -201,7 +191,7 @@ export function calculateIndicator(
       value: value[index],
       avg: avg[index],
       diff: currentDiff,
-      valueAvgState: classifyValueAvgState(index, value, avg, diff),
+      valueAvgState: classifyValueAvgState(index, diff),
       upperBand,
       lowerBand,
       upArrow,

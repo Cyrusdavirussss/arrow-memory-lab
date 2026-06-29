@@ -138,9 +138,10 @@ function SharedHighlights({
 }
 
 function stateZoneClass(state: CalculatedCandle["valueAvgState"]) {
-  if (state === "Expansion") return "state-zone-expansion";
-  if (state === "Compression") return "state-zone-compression";
-  if (state === "Catch-up") return "state-zone-catchup";
+  if (state === "Bullish expansion") return "state-zone-bullish";
+  if (state === "Bearish expansion") return "state-zone-bearish";
+  if (state === "Compression / catch-up") return "state-zone-compression";
+  if (state === "Snap-through") return "state-zone-snap";
   return "";
 }
 

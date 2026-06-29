@@ -1,6 +1,11 @@
 export type AverageType = "EMA" | "SMA";
 export type Direction = "up" | "down";
-export type ValueAvgState = "Expansion" | "Compression" | "Catch-up" | "Neutral";
+export type ValueAvgState =
+  | "Bullish expansion"
+  | "Bearish expansion"
+  | "Compression / catch-up"
+  | "Snap-through"
+  | "Neutral";
 export type ArrowClassification =
   | "Fresh / after forgotten memory"
   | "Reinforcement"
